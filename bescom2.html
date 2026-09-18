@@ -136,7 +136,7 @@
   .bar-fill{height:100%; border-radius:5px;}
 
   /* table */
-  table{width:100%; min-width:860px; border-collapse:collapse; font-size:13px;}
+  table{width:100%; min-width:960px; border-collapse:collapse; font-size:13px;}
   thead th{
     text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:1px;
     color:var(--muted); padding:0 12px 10px; font-weight:600; border-bottom:1px solid var(--line); white-space:nowrap;
@@ -330,8 +330,10 @@
             <th>Bill No</th>
             <th>Billing Period</th>
             <th class="mono">Reading (prev → curr)</th>
-            <th class="mono">Units Consumed</th>
-            <th class="mono">Bill Amount</th>
+            <th class="mono">Units</th>
+            <th class="mono">Gross Bill</th>
+            <th class="mono">GoK Subsidy</th>
+            <th class="mono">Final Amount</th>
             <th>Due Date</th>
             <th>Status</th>
             <th>Action</th>
@@ -374,8 +376,9 @@
         <div class="field"><label>Fixed Charges (₹)</label><input type="number" step="0.01" id="f-fixed" value="822.00"></div>
         <div class="field"><label>Energy Charges (₹)</label><input type="number" step="0.01" id="f-energy" value="0.00"></div>
         <div class="field"><label>FAC / Taxes / Rebates (₹)</label><input type="number" step="0.01" id="f-tax" value="0.00"></div>
+        <div class="field"><label>GoK Subsidy (₹)</label><input type="number" step="0.01" id="f-subsidy" value="0.00"></div>
       </div>
-      <div class="hint">Units consumed, and overall payable amounts are automatically logged to local storage.</div>
+      <div class="hint">Units consumed, subsidies, and overall payable amounts are automatically calculated and logged to local storage.</div>
       <div class="form-actions">
         <button class="btn-primary" id="save-bill-btn">Save BESCOM Bill</button>
         <button class="btn-ghost" id="cancel-bill-btn">Cancel</button>
@@ -494,7 +497,8 @@ async function persistBills(){
 }
 
 function billStatus(bill, todayIso){
-  if(bill.amount <= 0) return { key:"zero", text:"No charge" };
+  const finalAmt = bill.amount - (bill.gokSubsidy || 0);
+  if(finalAmt <= 0) return { key:"zero", text:"No charge" };
   if(bill.paid) return { key:"paid", text:"Paid" };
   const today = new Date(todayIso);
   const due = new Date(bill.dueDate);
@@ -524,7 +528,7 @@ function renderHero(todayIso){
   const latest = bills[bills.length - 1];
   const first = bills[0];
 
-  const totalAmount = bills.reduce((sum, b) => sum + Number(b.amount), 0);
+  const totalAmount = bills.reduce((sum, b) => sum + Math.max(0, b.amount - (b.gokSubsidy || 0)), 0);
   const avgAmount = totalAmount / bills.length;
 
   document.getElementById("hero-amount").textContent = avgAmount.toLocaleString("en-IN",{minimumFractionDigits:2, maximumFractionDigits:2});
@@ -588,7 +592,7 @@ function renderGauge(perDay){
 
 function renderKpis(){
   const totalConsumption = bills.reduce((s,b)=>s + Math.max(0, b.units !== undefined ? b.units : (b.currRead - b.prevRead)), 0);
-  const totalBilled = bills.reduce((s,b)=>s + Number(b.amount), 0);
+  const totalBilled = bills.reduce((s,b)=>s + Math.max(0, Number(b.amount) - (b.gokSubsidy || 0)), 0);
   const rate = totalConsumption > 0 ? totalBilled/totalConsumption : 0;
   
   document.getElementById("kpi-consumption").innerHTML = totalConsumption.toFixed(0) + " <small>Units</small>";
@@ -607,7 +611,7 @@ function renderTrend(){
   }
 
   const cons = bills.map(b => Math.max(0, b.units !== undefined ? b.units : (b.currRead - b.prevRead)));
-  const amts = bills.map(b => Number(b.amount));
+  const amts = bills.map(b => Math.max(0, Number(b.amount) - (b.gokSubsidy || 0)));
   const maxCons = Math.max(1, ...cons, 1) * 1.15;
   const maxAmt = Math.max(1, ...amts, 1) * 1.15;
   const n = Math.max(1, bills.length);
@@ -658,8 +662,9 @@ function renderBreakdown(){
   const fixed = latest.fixedCharges || 0;
   const energy = latest.energyCharges || 0;
   const tax = latest.taxCharges || 0; 
+  const gok = latest.gokSubsidy || 0;
+  const finalAmt = latest.amount - gok;
   
-  // Handle subzero/subsidy scenarios safely
   const gross = fixed + energy + Math.max(0, tax);
   const total = gross > 0 ? gross : 1;
 
@@ -677,7 +682,13 @@ function renderBreakdown(){
     </div>
   `).join('') + `
     <div class="breakdown-item" style="margin-top:18px; padding-top:14px; border-top:1px solid var(--line);">
-      <div class="row"><span style="color:var(--text); font-weight:600;">Total Payable Amount</span><b style="color:var(--amber); font-size:14px;">₹${latest.amount.toFixed(2)}</b></div>
+      <div class="row"><span style="color:var(--text); font-weight:600;">Gross Bill Amount</span><b style="color:var(--text); font-size:14px;">₹${latest.amount.toFixed(2)}</b></div>
+    </div>
+    <div class="breakdown-item" style="margin-top:6px;">
+      <div class="row"><span style="color:var(--good); font-weight:600;">GoK Subsidy</span><b style="color:var(--good); font-size:14px;">- ₹${gok.toFixed(2)}</b></div>
+    </div>
+    <div class="breakdown-item" style="margin-top:10px; padding-top:14px; border-top:1px dashed var(--amber);">
+      <div class="row"><span style="color:var(--text); font-weight:600;">Final Payable Amount</span><b style="color:var(--amber); font-size:16px;">₹${Math.max(0, finalAmt).toFixed(2)}</b></div>
     </div>
   `;
 }
@@ -685,7 +696,7 @@ function renderBreakdown(){
 async function renderHistory(todayIso){
   const tbody = document.getElementById("history-body");
   if(bills.length === 0){
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--muted); padding:24px;">No billing history available. Upload PDF bills or add one manually.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:var(--muted); padding:24px;">No billing history available. Upload PDF bills or add one manually.</td></tr>`;
     return;
   }
 
@@ -700,6 +711,8 @@ async function renderHistory(todayIso){
   tbody.innerHTML = billsWithPdfInfo.map(b => {
     const consumption = b.units !== undefined ? b.units : Math.max(0, b.currRead - b.prevRead);
     const st = billStatus(b, todayIso);
+    const gok = b.gokSubsidy || 0;
+    const finalAmt = b.amount - gok;
     
     const billCellContent = b.hasPdf 
       ? `<span class="pdf-link" data-inv="${b.invoiceNo}" title="Click to open PDF invoice">${b.invoiceNo} 📄</span>`
@@ -711,12 +724,14 @@ async function renderHistory(todayIso){
         <td>${fmtDate(b.prevDate)} → ${fmtDate(b.currDate)}</td>
         <td class="mono">${b.prevRead.toFixed(1)} → ${b.currRead.toFixed(1)}</td>
         <td class="mono">${consumption.toFixed(0)} Units</td>
-        <td class="mono">${money(b.amount)}</td>
+        <td class="mono" style="color:var(--muted);">${money(b.amount)}</td>
+        <td class="mono" style="color:var(--good);">- ${money(gok)}</td>
+        <td class="mono" style="font-weight:700; color:var(--amber);">${money(Math.max(0, finalAmt))}</td>
         <td>${fmtDate(b.dueDate)}</td>
         <td><span class="tag ${st.key}">${st.text}</span></td>
         <td>
           <div class="row-actions">
-            ${b.amount>0 ? `<button class="paid-toggle ${b.paid?'is-paid':''}" data-inv="${b.invoiceNo}">${b.paid?'Paid ✓':'Mark paid'}</button>` : ''}
+            ${finalAmt>0 ? `<button class="paid-toggle ${b.paid?'is-paid':''}" data-inv="${b.invoiceNo}">${b.paid?'Paid ✓':'Mark paid'}</button>` : ''}
             <button class="paid-toggle edit-btn" data-inv="${b.invoiceNo}">Edit</button>
           </div>
         </td>
@@ -786,6 +801,7 @@ function clearBillForm(){
   document.getElementById("f-fixed").value = "822.00";
   document.getElementById("f-energy").value = "0.00";
   document.getElementById("f-tax").value = "0.00";
+  document.getElementById("f-subsidy").value = "0.00";
 }
 
 function exitEditMode(){
@@ -808,6 +824,7 @@ function startEditBill(invoiceNo){
   document.getElementById("f-fixed").value = b.fixedCharges;
   document.getElementById("f-energy").value = b.energyCharges;
   document.getElementById("f-tax").value = b.taxCharges;
+  document.getElementById("f-subsidy").value = b.gokSubsidy || 0;
   saveBillBtn.textContent = "Update BESCOM Bill";
   formBody.classList.add("open");
   formBody.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -837,6 +854,7 @@ document.getElementById("save-bill-btn").addEventListener("click", async () => {
   const fixedCharges = parseFloat(document.getElementById("f-fixed").value) || 0;
   const energyCharges = parseFloat(document.getElementById("f-energy").value) || 0;
   const taxCharges = parseFloat(document.getElementById("f-tax").value) || 0;
+  const gokSubsidy = parseFloat(document.getElementById("f-subsidy").value) || 0;
 
   if(!invoiceNo || !billDate || !dueDate || !prevDate || !currDate || isNaN(prevRead) || isNaN(currRead)){
     alert("Please fill in required fields.");
@@ -850,6 +868,7 @@ document.getElementById("save-bill-btn").addEventListener("click", async () => {
   
   const units = Math.max(0, currRead - prevRead);
   const amount = fixedCharges + energyCharges + taxCharges;
+  const finalAmount = amount - gokSubsidy;
 
   if(editingInvoiceNo !== null){
     const idx = bills.findIndex(b => b.invoiceNo === editingInvoiceNo);
@@ -862,7 +881,7 @@ document.getElementById("save-bill-btn").addEventListener("click", async () => {
     bills[idx] = {
       ...existing,
       invoiceNo, billDate, dueDate, prevDate, prevRead, currDate, currRead, units,
-      fixedCharges, energyCharges, taxCharges, amount
+      fixedCharges, energyCharges, taxCharges, amount, gokSubsidy, finalAmount
     };
   } else {
     if(bills.some(b => b.invoiceNo === invoiceNo)){
@@ -871,7 +890,7 @@ document.getElementById("save-bill-btn").addEventListener("click", async () => {
     }
     bills.push({
       invoiceNo, billDate, dueDate, prevDate, prevRead, currDate, currRead, units,
-      fixedCharges, energyCharges, taxCharges, amount, paid: false
+      fixedCharges, energyCharges, taxCharges, amount, gokSubsidy, finalAmount, paid: false
     });
   }
 
@@ -971,13 +990,18 @@ document.getElementById("import-pdf-file").addEventListener("change", async func
          storePdfInDB(invoiceNo, fileBlob);
 
          const periodMatch = fullText.match(/(\d{2})\/?(\d{2})\/?\/?(\d{4})\s*-\s*(\d{2})\/?(\d{2})\/?\/?(\d{4})/i);
-         const dueDateMatch = fullText.match(/Due\s*Date.*?(\d{2}-[A-Za-z]{3}-\d{4}|\d{2}\/\d{2}\/\d{4})/i);
+         // Fixed regex for Due Date to traverse across new lines
+         const dueDateMatch = fullText.match(/Due\s*Date[\s\S]*?(\d{2}-[A-Za-z]{3}-\d{4}|\d{2}\/\d{2}\/\d{4})/i);
+         
          const prevReadMatch = fullText.match(/Previous\s*Reading.*?([\d.]+)/i);
          const currReadMatch = fullText.match(/Present\s*Reading.*?([\d.]+)/i);
          const unitsMatch = fullText.match(/Electricity\s*Consumption.*?([\d.]+)/i);
          const fixedMatch = fullText.match(/Fixed\s*charges.*?([\d.]+)/i);
          const energyMatch = fullText.match(/Energy\s*charges.*?([\d.]+)/i);
          const totalMatch = fullText.match(/Current\s*Bill\s*amount.*?([\d.]+)/i);
+         
+         // Added extraction for GoK Subsidy
+         const gokMatch = fullText.match(/GoK\s*Subsidy[\s\S]*?([\d.]+)/i);
 
          let prevDate = "2025-01-01", currDate = "2025-01-30", billDate = "2025-01-30";
          if (periodMatch) {
@@ -1001,11 +1025,14 @@ document.getElementById("import-pdf-file").addEventListener("change", async func
          const energyCharges = energyMatch ? parseFloat(energyMatch[1]) : 0;
          const amount = totalMatch ? parseFloat(totalMatch[1]) : (fixedCharges + energyCharges);
          const taxCharges = amount - (fixedCharges + energyCharges); // Can be negative for subsidies
+         
+         const gokSubsidy = gokMatch ? parseFloat(gokMatch[1]) : 0;
+         const finalAmount = amount - gokSubsidy;
 
          if (!bills.find(b => b.invoiceNo === invoiceNo)) {
            bills.push({
              invoiceNo, billDate, dueDate, prevDate, prevRead, currDate, currRead, units,
-             fixedCharges, energyCharges, taxCharges, amount, paid: false
+             fixedCharges, energyCharges, taxCharges, amount, gokSubsidy, finalAmount, paid: false
            });
            addedCount++;
          } else {
